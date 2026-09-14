@@ -40,12 +40,9 @@ jobs:
       - name: Install Flet CLI
         run: pip install flet
 
-      - name: Debug directory structure
-        run: ls -la
-
       - name: Build APK with Flet
         run: |
-          flet build apk --yes --module-name main
+          flet build apk --yes main.py
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

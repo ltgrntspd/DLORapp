@@ -1,17 +1,6 @@
 [tool.flet]
-# Название приложения на экране телефона
 title = "ЛОР Врач"
-
-# Уникальный идентификатор приложения (только латиница и точки)
 org = "com.dlorapp"
 product = "dlorapp"
-
-# Версия приложения
 version = "1.0.0"
-
-# Путь к вашей иконке
-icon = "assets/logo.png"
-
-[tool.flet.app]
-# Главный скрипт
-path = "main.py"
+main_script = "main.py"

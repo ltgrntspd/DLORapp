@@ -3,7 +3,7 @@ title = "ЛОР Врач"
 org = "com.dlorapp"
 product = "dlorapp"
 version = "1.0.1"
-icon = "assets/logo.png"
+icon = "assets/icon.png"
 
 [tool.flet.app]
 path = "."

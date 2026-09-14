@@ -1,3 +1,4 @@
+import os
 import flet as ft
 import database as db
 
@@ -7,6 +8,36 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.LIGHT
     page.window.width = 450
     page.window.height = 800
+
+    # --- Единый сервис для отправки/сохранения файлов ---
+    def export_and_share(file_path: str):
+        abs_path = os.path.abspath(file_path)
+        
+        if not os.path.exists(abs_path):
+            snack = ft.SnackBar(ft.Text("Ошибка: файл не найден"))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
+            return
+
+        # Проверяем наличие метода share (для Android/iOS)
+        if hasattr(page, "share"):
+            try:
+                page.share(files=[abs_path])
+                snack = ft.SnackBar(ft.Text("Выберите приложение для отправки"))
+            except Exception:
+                snack = ft.SnackBar(ft.Text(f"Сохранено: {abs_path}"))
+        else:
+            # На Windows/Linux откроет файл стандартной программой
+            try:
+                os.startfile(abs_path)
+                snack = ft.SnackBar(ft.Text(f"Файл открыт: {abs_path}"))
+            except Exception:
+                snack = ft.SnackBar(ft.Text(f"Сохранено локально: {abs_path}"))
+
+        page.overlay.append(snack)
+        snack.open = True
+        page.update()
 
     def get_room_names():
         with db.get_connection() as conn:
@@ -1136,11 +1167,14 @@ def main(page: ft.Page):
         
         success = db.export_to_excel(source, q, filename)
         
-        msg = f"Файл сохранен: {filename}" if success else "Записи по заданному критерию не найдены"
-        snack = ft.SnackBar(ft.Text(msg))
-        page.overlay.append(snack)
-        snack.open = True
-        page.update()
+        if success:
+            # Вызываем диалог отправки/сохранения
+            export_and_share(filename)
+        else:
+            snack = ft.SnackBar(ft.Text("Записи по заданному критерию не найдены"))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
 
     excel_btn = ft.Button("Сформировать Excel", icon=ft.Icons.TABLE_CHART, on_click=generate_excel)
 
@@ -1157,14 +1191,14 @@ def main(page: ft.Page):
             page.update()
             return
 
-        # Показываем сформированное изображение в модальном окне
+        # Показываем предпросмотр и добавляем кнопку "Поделиться"
         memo_dialog = ft.AlertDialog(
-            title=ft.Text("Памятка для интерна сформирована"),
+            title=ft.Text("Памятка для интерна"),
             content=ft.Column([
-                ft.Text(f"Файл сохранен как {filename}", size=12, color=ft.Colors.GREY_600),
                 ft.Image(src=filename, width=400, fit="contain")
             ], tight=True, spacing=10),
             actions=[
+                ft.TextButton("Отправить/Сохранить", on_click=lambda e: export_and_share(filename)),
                 ft.TextButton("Закрыть", on_click=lambda e: setattr(memo_dialog, "open", False) or page.update())
             ]
         )

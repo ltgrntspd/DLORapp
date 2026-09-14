@@ -42,7 +42,7 @@ jobs:
 
       - name: Build APK with Flet
         run: |
-          flet build apk --module-name main --yes
+          flet build apk --module-name main --icon assets/logo.png --yes
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

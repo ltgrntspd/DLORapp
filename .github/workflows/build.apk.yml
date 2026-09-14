@@ -33,7 +33,7 @@ jobs:
 
       - name: Build APK with Flet
         run: |
-          flet build apk --icon assets/logo.png
+          flet build apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

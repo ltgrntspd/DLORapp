@@ -1,0 +1,4 @@
+flet>=0.21.0
+pillow
+openpyxl
+pandas

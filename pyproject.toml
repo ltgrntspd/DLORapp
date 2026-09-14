@@ -1,6 +1,8 @@
 [tool.flet]
-title = "ЛОР Врач"
+title = "ЛОР Отделение"
 org = "com.dlorapp"
 product = "dlorapp"
 version = "1.0.0"
-main_script = "main.py"
+
+[tool.flet.app]
+path = "main.py"

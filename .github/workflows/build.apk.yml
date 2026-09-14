@@ -40,14 +40,9 @@ jobs:
       - name: Install Flet CLI
         run: pip install flet
 
-      - name: Verify workspace contents
-        run: |
-          pwd
-          ls -la
-
       - name: Build APK with Flet
         run: |
-          flet build apk --yes --project .
+          flet build apk --module-name main --yes
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

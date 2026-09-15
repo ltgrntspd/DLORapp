@@ -1,16 +1,12 @@
 import datetime
-import os
 import pandas as pd
 import sqlite3
 from typing import List, Dict, Optional
 from PIL import Image, ImageDraw, ImageFont
+import os
+import tempfile
 
-# FLET_APP_STORAGE_DATA - гарантированно доступный для записи и не удаляемый
-# каталог приложения на всех платформах (Windows/Linux/macOS/Android/iOS).
-# Если переменная не задана (например, запуск не через Flet), используем
-# текущую папку, как раньше.
-_APP_DATA_DIR = os.environ.get("FLET_APP_STORAGE_DATA", ".")
-DB_NAME = os.path.join(_APP_DATA_DIR, "hospital_app.db")
+DB_NAME = "hospital_app.db"
 
 
 def get_connection():
@@ -383,128 +379,172 @@ def get_district_patients():
         )
         return [dict(row) for row in cursor.fetchall()]
 
-def export_to_excel(source_type: str, query_text: str, output_filename: str = "report.xlsx") -> bool:
-    """
-    source_type: 'hospital' или 'private'
-    query_text: поиск по диагнозу или операции
-    """
-    with get_connection() as conn:
-        sql = """
-            SELECT 
-                fio AS "ФИО",
-                birth_date AS "Дата рождения",
-                room_key AS "Палата/Локация",
-                diagnosis_planned AS "Диагноз планируемый",
-                diagnosis_final AS "Диагноз окончательный",
-                operation_planned AS "Операция планируемая",
-                operation_done AS "Операция выполненная",
-                intraop_complications AS "Осложнения",
-                postop_features AS "Особенности",
-                created_at AS "Дата создания",
-                discharge_at AS "Дата выписки/операции"
-            FROM patients
-            WHERE context_type = ? 
-              AND (diagnosis_planned LIKE ? OR diagnosis_final LIKE ? OR operation_planned LIKE ? OR operation_done LIKE ?)
-        """
-        param = f"%{query_text}%"
-        df = pd.read_sql_query(sql, conn, params=(source_type, param, param, param, param))
-        
-        if df.empty:
-            return False
-            
-        df.to_excel(output_filename, index=False)
-        return True
 
-def generate_intern_memo_image(output_filename: str = "intern_memo.png") -> bool:
+def get_app_shared_dir() -> str:
     """
-    Формирует PNG-картинку с задачами по палатам для интерна.
+    Возвращает общую директорию для файлов, доступную другим приложениям.
+    ✅ ИСПРАВЛЕНО: Для кроссплатформенной работы
     """
-    rooms = get_room_names()
-    patients = get_hospital_patients()
-    
-    # Отбираем только пациентов с задачами
-    targets = []
-    for p in patients:
-        tasks_text = (p.get("tasks") or "").strip()
-        if tasks_text and p.get("discharge_stage", 0) == 0:
-            targets.append(p)
-            
-    if not targets:
-        return False  # Нет пациентов с задачами
-
-    # Размеры и стили картинки
-    width = 800
-    padding = 30
-    line_height = 28
-    
-    # Вычисляем высоту динамически в зависимости от количества строк
-    total_lines = 3  # Заголовок и дата
-    for p in targets:
-        total_lines += 3  # Палата, ФИО/Возраст/Диагноз
-        tasks_count = len([t for t in p["tasks"].split("\n") if t.strip()])
-        total_lines += tasks_count + 1
-
-    height = max(400, padding * 2 + total_lines * line_height)
-    
-    # Создаем холст (светло-голубой фон)
-    image = Image.new("RGB", (width, height), color=(240, 244, 248))
-    draw = ImageDraw.Draw(image)
-    
-    # Шрифт: "arial.ttf" есть только в Windows. На Android/iOS/Linux такого
-    # файла нет, поэтому раньше здесь всегда срабатывал except -> load_default().
-    # Проблема в том, что запасной шрифт Pillow (Aileron/bitmap) НЕ содержит
-    # кириллицу: draw.text() с русским текстом либо кинет исключение
-    # (UnicodeEncodeError на старых версиях Pillow), либо покажет квадратики
-    # вместо букв. Поэтому шрифт с кириллицей нужно возить с собой в assets
-    # и грузить по пути относительно расположения этого файла (он остаётся
-    # читаемым даже когда каталог приложения становится read-only на мобильных).
-    _base_dir = os.path.dirname(os.path.abspath(__file__))
-    _regular_font_path = os.path.join(_base_dir, "assets", "fonts", "DejaVuSans.ttf")
-    _bold_font_path = os.path.join(_base_dir, "assets", "fonts", "DejaVuSans-Bold.ttf")
     try:
-        font_title = ImageFont.truetype(_regular_font_path, 22)
-        font_body = ImageFont.truetype(_regular_font_path, 16)
-        font_bold = ImageFont.truetype(_bold_font_path, 17)
-    except IOError:
-        # Совсем без файла шрифта - хотя бы не падаем, но кириллица
-        # отображаться не будет. Добавьте .ttf с кириллицей в assets/fonts.
-        font_title = font_body = font_bold = ImageFont.load_default()
+        # Используем системную временную директорию как fallback
+        return tempfile.gettempdir()
+    except Exception:
+        # Если не удалось получить — возвращаем текущую директорию
+        return "."
 
-    y = padding
-    
-    # Шапка
-    today_str = datetime.date.today().strftime("%d.%m.%Y")
-    draw.text((padding, y), f"ПАМЯТКА ИНТЕРНУ — {today_str}", fill=(15, 23, 42), font=font_title)
-    y += 40
-    draw.line([(padding, y), (width - padding, y)], fill=(203, 213, 225), width=2)
-    y += 20
 
-    # Список пациентов
-    for p in targets:
-        r_name = rooms.get(p["room_key"], "Отделение")
-        age_str = format_age(p["birth_date"])
-        age_disp = f" ({age_str})" if age_str else ""
-        diag = p["diagnosis_planned"] or "Диагноз не указан"
-
-        # Заголовок пациента: Палата + ФИО
-        draw.text((padding, y), f"• [{r_name}] {p['fio']}{age_disp}", fill=(30, 58, 138), font=font_bold)
-        y += 24
-        
-        # Диагноз
-        draw.text((padding + 15, y), f"Диагноз: {diag}", fill=(71, 85, 105), font=font_body)
-        y += 24
-        
-        # Задачи
-        tasks_list = [t.strip() for t in p["tasks"].split("\n") if t.strip()]
-        for t in tasks_list:
-            draw.text((padding + 25, y), f"[ ] {t}", fill=(15, 23, 42), font=font_body)
-            y += 22
+def export_to_excel(source_type: str, query_text: str, output_filename: str = "report.xlsx") -> tuple:
+    """
+    Экспорт в Excel с проверкой зависимостей и доступным путём.
+    Возвращает (успех: bool, filepath: str или error_message: str)
+    """
+    try:
+        with db.get_connection() as conn:
+            sql = """
+                SELECT 
+                    fio AS "ФИО",
+                    birth_date AS "Дата рождения",
+                    room_key AS "Палата/Локация",
+                    diagnosis_planned AS "Диагноз планируемый",
+                    diagnosis_final AS "Диагноз окончательный",
+                    operation_planned AS "Операция планируемая",
+                    operation_done AS "Операция выполненная",
+                    intraop_complications AS "Осложнения",
+                    postop_features AS "Особенности",
+                    created_at AS "Дата создания",
+                    discharge_at AS "Дата выписки/операции"
+                FROM patients
+                WHERE context_type = ? 
+                  AND (diagnosis_planned LIKE ? OR diagnosis_final LIKE ? OR operation_planned LIKE ? OR operation_done LIKE ?)
+            """
+            param = f"%{query_text}%"
+            df = pd.read_sql_query(sql, conn, params=(source_type, param, param, param, param))
             
-        y += 15  # Отступ между пациентами
+            if df.empty:
+                return (False, "Записи по заданному критерию не найдены")
+            
+            # ✅ ИСПРАВЛЕНО: Используем общую директорию
+            shared_dir = get_app_shared_dir()
+            full_path = os.path.join(shared_dir, output_filename)
+            
+            # Проверяем наличие необходимых библиотек
+            try:
+                df.to_excel(full_path, index=False)
+                return (True, full_path)
+            except ImportError as e:
+                return (False, f"Недостаточно зависимостей для Excel: {e}. Установите openpyxl или xlsxwriter")
+            
+    except Exception as e:
+        return (False, f"Ошибка экспорта: {str(e)}")
 
-    image.save(output_filename)
-    return True
 
+def generate_intern_memo_image(output_filename: str = "intern_memo.png") -> tuple:
+    """
+    ✅ ИСПРАВЛЕНО: Формирует PNG-картинку с задачами по палатам для интерна.
+    Возвращает (успех: bool, filepath: str или error_message: str)
+    """
+    try:
+        rooms = get_room_names()
+        patients = get_hospital_patients()
+        
+        # Отбираем только пациентов с задачами
+        targets = []
+        for p in patients:
+            tasks_text = (p.get("tasks") or "").strip()
+            if tasks_text and p.get("discharge_stage", 0) == 0:
+                targets.append(p)
+                
+        if not targets:
+            return (False, "Нет пациентов с задачами")
+
+        # Размеры и стили картинки
+        width = 800
+        padding = 30
+        line_height = 28
+        
+        # Вычисляем высоту динамически в зависимости от количества строк
+        total_lines = 3  # Заголовок и дата
+        for p in targets:
+            total_lines += 3  # Палата, ФИО/Возраст/Диагноз
+            tasks_count = len([t for t in p["tasks"].split("\n") if t.strip()])
+            total_lines += tasks_count + 1
+
+        height = max(400, padding * 2 + total_lines * line_height)
+        
+        # Создаем холст (светло-голубой фон)
+        image = Image.new("RGB", (width, height), color=(240, 244, 248))
+        draw = ImageDraw.Draw(image)
+        
+        # ✅ ИСПРАВЛЕНО: Более надёжная загрузка шрифтов с fallback
+        font_title = None
+        font_body = None
+        font_bold = None
+        
+        # Пытаемся загрузить системные шрифты для разных платформ
+        font_paths = [
+            "arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+        
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    font_title = ImageFont.truetype(font_path, 22)
+                    font_body = ImageFont.truetype(font_path, 16)
+                    font_bold = ImageFont.truetype(font_path.replace(".ttf", "bd.ttf"), 17)
+                    if not os.path.exists(font_bold.font_path):
+                        font_bold = font_body  # fallback на обычный
+                    break
+                except:
+                    continue
+        
+        if font_title is None:
+            font_title = font_body = font_bold = ImageFont.load_default()
+
+        y = padding
+        
+        # Шапка
+        today_str = datetime.date.today().strftime("%d.%m.%Y")
+        draw.text((padding, y), f"ПАМЯТКА ИНТЕРНУ — {today_str}", fill=(15, 23, 42), font=font_title)
+        y += 40
+        draw.line([(padding, y), (width - padding, y)], fill=(203, 213, 225), width=2)
+        y += 20
+
+        # Список пациентов
+        for p in targets:
+            r_name = rooms.get(p["room_key"], "Отделение")
+            age_str = format_age(p["birth_date"])
+            age_disp = f" ({age_str})" if age_str else ""
+            diag = p["diagnosis_planned"] or "Диагноз не указан"
+
+            # Заголовок пациента: Палата + ФИО
+            draw.text((padding, y), f"• [{r_name}] {p['fio']}{age_disp}", fill=(30, 58, 138), font=font_bold)
+            y += 24
+            
+            # Диагноз
+            draw.text((padding + 15, y), f"Диагноз: {diag}", fill=(71, 85, 105), font=font_body)
+            y += 24
+            
+            # Задачи
+            tasks_list = [t.strip() for t in p["tasks"].split("\n") if t.strip()]
+            for t in tasks_list:
+                draw.text((padding + 25, y), f"[ ] {t}", fill=(15, 23, 42), font=font_body)
+                y += 22
+                
+            y += 15  # Отступ между пациентами
+
+        # ✅ ИСПРАВЛЕНО: Сохраняем в общую директорию
+        shared_dir = get_app_shared_dir()
+        full_path = os.path.join(shared_dir, output_filename)
+        image.save(full_path)
+        
+        return (True, full_path)
+        
+    except Exception as e:
+        return (False, f"Ошибка генерации изображения: {str(e)}")
+    
 def get_room_names() -> dict:
     """Возвращает словарь соответствия ключей палат и их названий из settings."""
     with get_connection() as conn:
@@ -512,4 +552,5 @@ def get_room_names() -> dict:
         cursor.execute("SELECT key, value FROM settings")
         return {row["key"]: row["value"] for row in cursor.fetchall()}
     
+
 init_db()

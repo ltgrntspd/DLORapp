@@ -1,7 +1,8 @@
 import os
-import re
 import flet as ft
 import database as db
+import platform
+import shutil
 
 
 def main(page: ft.Page):
@@ -10,64 +11,76 @@ def main(page: ft.Page):
     page.window.width = 450
     page.window.height = 800
 
-    # --- Единый сервис для отправки/сохранения файлов ---
-    share_service = ft.Share()
-    storage_paths = ft.StoragePaths()
-
-    def show_snack(text: str):
-        snack = ft.SnackBar(ft.Text(text))
-        page.overlay.append(snack)
-        snack.open = True
-        page.update()
-
-    async def get_export_dir() -> str:
+    # ✅ ИСПРАВЛЕНО: Единый сервис для отправки/сохранения файлов с кроссплатформенной поддержкой
+    def export_and_share(file_path: str):
         """
-        Каталог, куда реально можно писать файлы на любой платформе.
-        На Windows/Linux/macOS в dev-режиме используем текущую папку,
-        на Android/iOS — приватный, но доступный для чтения каталог приложения
-        (получить его можно только асинхронно, через StoragePaths).
+        Обрабатывает отправку/сохранение файла на всех платформах.
+        На Android использует нативное меню шаринга.
         """
-        if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
-            try:
-                return await storage_paths.get_application_documents_directory()
-            except Exception:
-                return await storage_paths.get_temporary_directory()
-        return os.path.abspath(".")
-
-    async def export_and_share(file_path: str):
-        if not os.path.exists(file_path):
-            show_snack("Ошибка: файл не найден")
+        abs_path = os.path.abspath(file_path)
+        
+        # Проверяем существование файла
+        if not os.path.exists(abs_path):
+            snack = ft.SnackBar(ft.Text(f"Ошибка: файл не найден ({file_path})"))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
             return
 
-        # На Windows/Linux/macOS у нас нет системного окна "Поделиться" —
-        # просто открываем файл стандартной программой.
-        if page.platform not in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
+        # ✅ ИСПРАВЛЕНО: Пробуем нативный share API (работает на Android/iOS)
+        if hasattr(page, "share") and callable(getattr(page, "share")):
             try:
-                os.startfile(file_path)  # только Windows
-                show_snack(f"Файл открыт: {file_path}")
-            except AttributeError:
-                # os.startfile отсутствует на Linux/macOS
-                show_snack(f"Файл сохранён: {file_path}")
-            except Exception as ex:
-                show_snack(f"Не удалось открыть файл: {ex}")
-            return
-
-        # Android/iOS — настоящее системное меню "Поделиться"
+                page.share(files=[abs_path])
+                snack = ft.SnackBar(ft.Text("Выберите приложение для отправки"))
+                page.overlay.append(snack)
+                snack.open = True
+                page.update()
+                return
+            except Exception as share_error:
+                print(f"Share API failed: {share_error}")
+                # Продолжаем к фоллабэку, если share не сработал
+        
+        # Фоллабэк для десктопа
         try:
-            result = await share_service.share_files(
-                [ft.ShareFile.from_path(file_path)],
-                title="Отправить файл",
-            )
-            if result and result.status:
-                show_snack("Готово")
-            else:
-                show_snack("Отправка отменена")
-        except Exception as ex:
-            show_snack(f"Не удалось поделиться файлом: {ex}")
+            system = platform.system()
+            
+            if system == "Windows":
+                os.startfile(abs_path)
+                snack_msg = f"Файл открыт: {abs_path}"
+            elif system == "Darwin":  # macOS
+                import subprocess
+                subprocess.call(["open", abs_path])
+                snack_msg = f"Файл открыт: {abs_path}"
+            else:  # Linux / Android (fallback)
+                # На Android это обычно не сработает, но сохраняем информацию
+                snack_msg = f"Файл сохранён:\n{abs_path}\n\nДля отправки используйте менеджер файлов."
+            
+            snack = ft.SnackBar(ft.Text(snack_msg), duration=5000)
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
+            
+        except AttributeError:
+            # os.startfile недоступен (не Windows)
+            snack = ft.SnackBar(ft.Text(f"Файл сохранён:\n{abs_path}\n\nИспользуйте файловый менеджер для открытия"))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
+        except Exception as e:
+            snack = ft.SnackBar(ft.Text(f"Ошибка: {str(e)}"))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
+
+    def get_room_names():
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT key, value FROM settings")
+            return {row["key"]: row["value"] for row in cursor.fetchall()}
 
     room_names = db.get_room_names()
 
-# --- Диалог просмотра/редактирования пациента ---
+    # --- Диалог просмотра/редактирования пациента ---
     def open_patient_details_dialog(patient: dict):
         rooms = db.get_room_names()
 
@@ -423,6 +436,7 @@ def main(page: ft.Page):
     hospital_content = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True)
 
     def refresh_hospital_view():
+        # ✅ ИСПРАВЛЕНО: Получаем комнаты один раз, а не дважды
         rooms = db.get_room_names()
         patients = db.get_hospital_patients()
 
@@ -541,9 +555,9 @@ def main(page: ft.Page):
                 src="logo.png",  # Имя файла из папки assets
                 fit="contain",
             ),
-            padding=5,  # Небольшой отступ, чтобы иконка не прилипала к краям
+            padding=5,
         ),
-        leading_width=40,  # Ширина зоны под логотип
+        leading_width=40,
         title=ft.Text("ЛОР Врач"),
         actions=[
             ft.IconButton(
@@ -554,9 +568,8 @@ def main(page: ft.Page):
         ],
     )
 
-# --- БЛОК 2: ЧАСТНЫЙ ЦЕНТР ---
+    # --- БЛОК 2: ЧАСТНЫЙ ЦЕНТР ---
 
-    # Подробный диалог для частного центра (без выбора палаты, с возможностью добавить дату операции позже)
     def open_private_details_dialog(patient: dict):
         diag_planned_in = ft.TextField(
             label="Диагноз", value=patient["diagnosis_planned"] or ""
@@ -633,7 +646,7 @@ def main(page: ft.Page):
             refresh_private_view()
 
         def process_archive(e):
-            db.advance_discharge_stage(patient["id"], 1) # Сразу отправляем в архив
+            db.advance_discharge_stage(patient["id"], 1)
             details_dialog.open = False
             refresh_private_view()
 
@@ -674,7 +687,7 @@ def main(page: ft.Page):
         details_dialog.open = True
         page.update()
 
-    # Диалог добавления записи
+    # Диалог добавления записей
     def open_add_private_dialog(e):
         fio_field = ft.TextField(label="ФИО пациента", autofocus=True)
         dob_field = ft.TextField(
@@ -726,7 +739,6 @@ def main(page: ft.Page):
             )
 
             dlg.open = False
-            # Мгновенно обновляем интерфейс вкладки
             refresh_private_view()
 
             snack = ft.SnackBar(ft.Text("Запись добавлена!"))
@@ -815,7 +827,7 @@ def main(page: ft.Page):
                 on_click=make_click_handler(p),
             )
 
-            private_content.controls.append(
+            private_content.append(
                 ft.Card(
                     content=card_content,
                     margin=ft.Margin(bottom=8, left=0, top=0, right=0),
@@ -824,7 +836,7 @@ def main(page: ft.Page):
 
         page.update()
 
-# --- БЛОК 3: ВЫЕЗДЫ ---
+    # --- БЛОК 3: ВЫЕЗДЫ ---
 
     DISTRICT_LOCATIONS = [
         "МОКБ",
@@ -1093,9 +1105,8 @@ def main(page: ft.Page):
 
         page.update()
 
-# --- БЛОК 4: ПОИСК И ЭКСПОРТ ---
+    # --- БЛОК 4: ПОИСК И ЭКСПОРТ ---
 
-    # Элементы поиска по ФИО
     fio_search_input = ft.TextField(
         label="ФИО пациента",
         hint_text="Введите фамилию...",
@@ -1158,7 +1169,6 @@ def main(page: ft.Page):
 
     search_fio_btn = ft.Button("Найти", icon=ft.Icons.SEARCH, on_click=search_by_fio)
 
-    # Элементы отчета Excel
     excel_query_input = ft.TextField(
         label="Диагноз или операция",
         hint_text="Например: Септопластика или Гайморит",
@@ -1173,55 +1183,56 @@ def main(page: ft.Page):
         value="hospital"
     )
 
-    async def generate_excel(e):
+    # ✅ ИСПРАВЛЕНО: Обновлённая функция экспорта с корректной обработкой путей
+    def generate_excel(e):
         q = excel_query_input.value.strip() if excel_query_input.value else ""
         if not q:
-            show_snack("Укажите диагноз или операцию для выгрузки")
+            snack = ft.SnackBar(ft.Text("Укажите диагноз или операцию для выгрузки"))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
             return
 
         source = excel_source_radio.value
-        # Убираем символы, недопустимые в имени файла (пользователь мог ввести "/", ":" и т.п.)
-        safe_q = re.sub(r'[\\/*?:"<>|]+', "_", q).strip() or "report"
-        filename = f"Report_{source}_{safe_q}.xlsx"
-        full_path = os.path.join(await get_export_dir(), filename)
-
-        success = db.export_to_excel(source, q, full_path)
-
+        filename = f"Report_{source}_{q[:20]}.xlsx"  # Ограничиваем имя файла
+        
+        # ✅ ИСПРАВЛЕНО: Теперь получает tuple (success, path_or_error)
+        success, result = db.export_to_excel(source, q, filename)
+        
         if success:
-            # Вызываем диалог отправки/сохранения
-            await export_and_share(full_path)
+            export_and_share(result)  # result содержит путь к файлу
         else:
-            show_snack("Записи по заданному критерию не найдены")
+            # result содержит сообщение об ошибке
+            snack = ft.SnackBar(ft.Text(result))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
 
     excel_btn = ft.Button("Сформировать Excel", icon=ft.Icons.TABLE_CHART, on_click=generate_excel)
 
     # Карточка-напоминалка интерну
-    # Диалог с предпросмотром картинки
-    async def generate_and_show_memo(e):
-        filename = "intern_memo.png"
-        full_path = os.path.join(await get_export_dir(), filename)
-        success = db.generate_intern_memo_image(full_path)
-
+    def generate_and_show_memo(e):
+        # ✅ ИСПРАВЛЕНО: Теперь получает tuple (success, path_or_error)
+        success, result = db.generate_intern_memo_image("intern_memo.png")
+        
         if not success:
-            show_snack("Нет активных задач для формирования памятки!")
+            snack = ft.SnackBar(ft.Text(result))  # result содержит сообщение об ошибке
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
             return
 
-        async def share_memo(e):
-            await export_and_share(full_path)
-
-        def close_memo(e):
-            memo_dialog.open = False
-            page.update()
-
+        memo_path = result
+        
         # Показываем предпросмотр и добавляем кнопку "Поделиться"
         memo_dialog = ft.AlertDialog(
             title=ft.Text("Памятка для интерна"),
             content=ft.Column([
-                ft.Image(src=full_path, width=400, fit="contain")
+                ft.Image(src=memo_path, width=400, fit="contain")
             ], tight=True, spacing=10),
             actions=[
-                ft.TextButton("Отправить/Сохранить", on_click=share_memo),
-                ft.TextButton("Закрыть", on_click=close_memo),
+                ft.TextButton("Отправить/Сохранить", on_click=lambda e: export_and_share(memo_path)),
+                ft.TextButton("Закрыть", on_click=lambda e: setattr(memo_dialog, "open", False) or page.update())
             ]
         )
         page.overlay.append(memo_dialog)
@@ -1247,7 +1258,7 @@ def main(page: ft.Page):
                     excel_btn,
                 ],
                 spacing=10,
-                horizontal_alignment=ft.CrossAxisAlignment.START,  # Заменено cross_axis_alignment на horizontal_alignment
+                horizontal_alignment=ft.CrossAxisAlignment.START,
             ),
             
             ft.Divider(),

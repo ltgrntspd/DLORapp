@@ -1,4 +1,4 @@
-flet>=0.21.0
-pillow
-openpyxl
-pandas
+flet>=0.23.0
+pandas>=2.0.0
+Pillow>=9.0.0
+openpyxl>=3.1.0

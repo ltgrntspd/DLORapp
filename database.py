@@ -1,10 +1,16 @@
 import datetime
+import os
 import pandas as pd
 import sqlite3
 from typing import List, Dict, Optional
 from PIL import Image, ImageDraw, ImageFont
 
-DB_NAME = "hospital_app.db"
+# FLET_APP_STORAGE_DATA - гарантированно доступный для записи и не удаляемый
+# каталог приложения на всех платформах (Windows/Linux/macOS/Android/iOS).
+# Если переменная не задана (например, запуск не через Flet), используем
+# текущую папку, как раньше.
+_APP_DATA_DIR = os.environ.get("FLET_APP_STORAGE_DATA", ".")
+DB_NAME = os.path.join(_APP_DATA_DIR, "hospital_app.db")
 
 
 def get_connection():
@@ -444,12 +450,24 @@ def generate_intern_memo_image(output_filename: str = "intern_memo.png") -> bool
     image = Image.new("RGB", (width, height), color=(240, 244, 248))
     draw = ImageDraw.Draw(image)
     
-    # Шрифт (используем системный по умолчанию)
+    # Шрифт: "arial.ttf" есть только в Windows. На Android/iOS/Linux такого
+    # файла нет, поэтому раньше здесь всегда срабатывал except -> load_default().
+    # Проблема в том, что запасной шрифт Pillow (Aileron/bitmap) НЕ содержит
+    # кириллицу: draw.text() с русским текстом либо кинет исключение
+    # (UnicodeEncodeError на старых версиях Pillow), либо покажет квадратики
+    # вместо букв. Поэтому шрифт с кириллицей нужно возить с собой в assets
+    # и грузить по пути относительно расположения этого файла (он остаётся
+    # читаемым даже когда каталог приложения становится read-only на мобильных).
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+    _regular_font_path = os.path.join(_base_dir, "assets", "fonts", "DejaVuSans.ttf")
+    _bold_font_path = os.path.join(_base_dir, "assets", "fonts", "DejaVuSans-Bold.ttf")
     try:
-        font_title = ImageFont.truetype("arial.ttf", 22)
-        font_body = ImageFont.truetype("arial.ttf", 16)
-        font_bold = ImageFont.truetype("arialbd.ttf", 17)
+        font_title = ImageFont.truetype(_regular_font_path, 22)
+        font_body = ImageFont.truetype(_regular_font_path, 16)
+        font_bold = ImageFont.truetype(_bold_font_path, 17)
     except IOError:
+        # Совсем без файла шрифта - хотя бы не падаем, но кириллица
+        # отображаться не будет. Добавьте .ttf с кириллицей в assets/fonts.
         font_title = font_body = font_bold = ImageFont.load_default()
 
     y = padding

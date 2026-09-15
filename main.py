@@ -1,4 +1,5 @@
 import os
+import re
 import flet as ft
 import database as db
 
@@ -10,40 +11,59 @@ def main(page: ft.Page):
     page.window.height = 800
 
     # --- Единый сервис для отправки/сохранения файлов ---
-    def export_and_share(file_path: str):
-        abs_path = os.path.abspath(file_path)
-        
-        if not os.path.exists(abs_path):
-            snack = ft.SnackBar(ft.Text("Ошибка: файл не найден"))
-            page.overlay.append(snack)
-            snack.open = True
-            page.update()
-            return
+    share_service = ft.Share()
+    storage_paths = ft.StoragePaths()
 
-        # Проверяем наличие метода share (для Android/iOS)
-        if hasattr(page, "share"):
-            try:
-                page.share(files=[abs_path])
-                snack = ft.SnackBar(ft.Text("Выберите приложение для отправки"))
-            except Exception:
-                snack = ft.SnackBar(ft.Text(f"Сохранено: {abs_path}"))
-        else:
-            # На Windows/Linux откроет файл стандартной программой
-            try:
-                os.startfile(abs_path)
-                snack = ft.SnackBar(ft.Text(f"Файл открыт: {abs_path}"))
-            except Exception:
-                snack = ft.SnackBar(ft.Text(f"Сохранено локально: {abs_path}"))
-
+    def show_snack(text: str):
+        snack = ft.SnackBar(ft.Text(text))
         page.overlay.append(snack)
         snack.open = True
         page.update()
 
-    def get_room_names():
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT key, value FROM settings")
-            return {row["key"]: row["value"] for row in cursor.fetchall()}
+    async def get_export_dir() -> str:
+        """
+        Каталог, куда реально можно писать файлы на любой платформе.
+        На Windows/Linux/macOS в dev-режиме используем текущую папку,
+        на Android/iOS — приватный, но доступный для чтения каталог приложения
+        (получить его можно только асинхронно, через StoragePaths).
+        """
+        if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
+            try:
+                return await storage_paths.get_application_documents_directory()
+            except Exception:
+                return await storage_paths.get_temporary_directory()
+        return os.path.abspath(".")
+
+    async def export_and_share(file_path: str):
+        if not os.path.exists(file_path):
+            show_snack("Ошибка: файл не найден")
+            return
+
+        # На Windows/Linux/macOS у нас нет системного окна "Поделиться" —
+        # просто открываем файл стандартной программой.
+        if page.platform not in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
+            try:
+                os.startfile(file_path)  # только Windows
+                show_snack(f"Файл открыт: {file_path}")
+            except AttributeError:
+                # os.startfile отсутствует на Linux/macOS
+                show_snack(f"Файл сохранён: {file_path}")
+            except Exception as ex:
+                show_snack(f"Не удалось открыть файл: {ex}")
+            return
+
+        # Android/iOS — настоящее системное меню "Поделиться"
+        try:
+            result = await share_service.share_files(
+                [ft.ShareFile.from_path(file_path)],
+                title="Отправить файл",
+            )
+            if result and result.status:
+                show_snack("Готово")
+            else:
+                show_snack("Отправка отменена")
+        except Exception as ex:
+            show_snack(f"Не удалось поделиться файлом: {ex}")
 
     room_names = db.get_room_names()
 
@@ -1153,53 +1173,55 @@ def main(page: ft.Page):
         value="hospital"
     )
 
-    def generate_excel(e):
+    async def generate_excel(e):
         q = excel_query_input.value.strip() if excel_query_input.value else ""
         if not q:
-            snack = ft.SnackBar(ft.Text("Укажите диагноз или операцию для выгрузки"))
-            page.overlay.append(snack)
-            snack.open = True
-            page.update()
+            show_snack("Укажите диагноз или операцию для выгрузки")
             return
 
         source = excel_source_radio.value
-        filename = f"Report_{source}_{q}.xlsx"
-        
-        success = db.export_to_excel(source, q, filename)
-        
+        # Убираем символы, недопустимые в имени файла (пользователь мог ввести "/", ":" и т.п.)
+        safe_q = re.sub(r'[\\/*?:"<>|]+', "_", q).strip() or "report"
+        filename = f"Report_{source}_{safe_q}.xlsx"
+        full_path = os.path.join(await get_export_dir(), filename)
+
+        success = db.export_to_excel(source, q, full_path)
+
         if success:
             # Вызываем диалог отправки/сохранения
-            export_and_share(filename)
+            await export_and_share(full_path)
         else:
-            snack = ft.SnackBar(ft.Text("Записи по заданному критерию не найдены"))
-            page.overlay.append(snack)
-            snack.open = True
-            page.update()
+            show_snack("Записи по заданному критерию не найдены")
 
     excel_btn = ft.Button("Сформировать Excel", icon=ft.Icons.TABLE_CHART, on_click=generate_excel)
 
     # Карточка-напоминалка интерну
     # Диалог с предпросмотром картинки
-    def generate_and_show_memo(e):
+    async def generate_and_show_memo(e):
         filename = "intern_memo.png"
-        success = db.generate_intern_memo_image(filename)
-        
+        full_path = os.path.join(await get_export_dir(), filename)
+        success = db.generate_intern_memo_image(full_path)
+
         if not success:
-            snack = ft.SnackBar(ft.Text("Нет активных задач для формирования памятки!"))
-            page.overlay.append(snack)
-            snack.open = True
-            page.update()
+            show_snack("Нет активных задач для формирования памятки!")
             return
+
+        async def share_memo(e):
+            await export_and_share(full_path)
+
+        def close_memo(e):
+            memo_dialog.open = False
+            page.update()
 
         # Показываем предпросмотр и добавляем кнопку "Поделиться"
         memo_dialog = ft.AlertDialog(
             title=ft.Text("Памятка для интерна"),
             content=ft.Column([
-                ft.Image(src=filename, width=400, fit="contain")
+                ft.Image(src=full_path, width=400, fit="contain")
             ], tight=True, spacing=10),
             actions=[
-                ft.TextButton("Отправить/Сохранить", on_click=lambda e: export_and_share(filename)),
-                ft.TextButton("Закрыть", on_click=lambda e: setattr(memo_dialog, "open", False) or page.update())
+                ft.TextButton("Отправить/Сохранить", on_click=share_memo),
+                ft.TextButton("Закрыть", on_click=close_memo),
             ]
         )
         page.overlay.append(memo_dialog)
